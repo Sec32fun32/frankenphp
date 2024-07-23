@@ -53,7 +53,6 @@ type contextKeyStruct struct{}
 type handleKeyStruct struct{}
 
 var contextKey = contextKeyStruct{}
-var handleKey = handleKeyStruct{}
 
 var (
 	InvalidRequestError         = errors.New("not a FrankenPHP request")
@@ -191,7 +190,6 @@ func NewRequestWithContext(r *http.Request, opts ...RequestOption) (*http.Reques
 	fc.scriptFilename = sanitizedPathJoin(fc.documentRoot, fc.scriptName)
 
 	c := context.WithValue(r.Context(), contextKey, fc)
-	c = context.WithValue(c, handleKey, Handles())
 
 	return r.WithContext(c), nil
 }
