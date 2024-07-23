@@ -299,8 +299,7 @@ func Init(options ...Option) error {
 		return NotEnoughThreads
 	}
 
-	runtime.GOMAXPROCS(opt.numThreads * 2)
-
+	// create enough request handles to keep spin-lock down
 	requestHandles = ConcurrentHandle.NewConcurrentHandle(opt.numThreads * 4)
 
 	config := Config()
@@ -320,6 +319,7 @@ func Init(options ...Option) error {
 
 	shutdownWG.Add(1)
 	done = make(chan struct{})
+	// keep latency down by having enough to concurrently handle requests, plus a small buffer
 	requestChan = make(chan *http.Request, opt.numThreads*2)
 
 	if C.frankenphp_init(C.int(opt.numThreads)) != 0 {
@@ -414,11 +414,9 @@ func updateServerContext(request *http.Request, create bool, mrh C.uintptr_t) (*
 	var rh Handle
 	if fc.responseWriter == nil {
 		h := mainRequests.NewHandle(request)
-		//request.Context().Value(handleKey).(*handleList).AddCHandle(h)
 		mrh = C.uintptr_t(h)
 	} else {
 		rh = requestHandles.NewHandle(request)
-		//request.Context().Value(handleKey).(*handleList).AddCHandle(rh)
 	}
 
 	ret := C.frankenphp_update_server_context(
@@ -442,22 +440,6 @@ func updateServerContext(request *http.Request, create bool, mrh C.uintptr_t) (*
 	}
 
 	return &rh, nil
-}
-
-// dumpStack prints the stack trace of the current goroutine to the provided writer.
-func dumpStack() {
-	// Create a buffer to hold the stack trace
-	buf := make([]byte, 1024)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			buf = buf[:n]
-			break
-		}
-		buf = make([]byte, 2*len(buf))
-	}
-	// Print the stack trace to stderr
-	fmt.Fprintf(os.Stderr, "Stack dump at %v:\n%s\n", time.Now(), buf)
 }
 
 // ServeHTTP executes a PHP script according to the given context.
@@ -486,12 +468,6 @@ func ServeHTTP(responseWriter http.ResponseWriter, request *http.Request) error 
 		<-fc.done
 	}
 
-	// Dump stack after executing the PHP script
-	// randomly dump every 1000 requests
-	//if rand.Intn(1000) == 0 {
-	//	dumpStack()
-	//}
-
 	return nil
 }
 
@@ -502,23 +478,15 @@ func go_handle_request() bool {
 		return false
 
 	case r := <-requestChan:
-		//logger.Warn("request channel depth", zap.Int("depth", len(requestChan)))
-		//h := cgo.NewHandle(r)
-		//h := requestHandles.NewHandle(r)
-		//r.Context().Value(handleKey).(*handleList).AddHandle(h)
-
 		fc, ok := FromContext(r.Context())
 		if !ok {
 			panic(InvalidRequestError)
 		}
 		defer func() {
 			maybeCloseContext(fc)
-			//requestHandles.Delete()
-			//r.Context().Value(handleKey).(*handleList).FreeAll()
 		}()
 
 		rh, err := updateServerContext(r, true, 0)
-		//logger.Warn("request handling started", zap.Int("rh", int(*rh)))
 		if err != nil {
 			panic(err)
 		}
@@ -530,7 +498,6 @@ func go_handle_request() bool {
 		}
 
 		requestHandles.Delete(*rh)
-		//logger.Warn("request handling finished", zap.Int("rh", int(*rh)))
 
 		return true
 	}
@@ -544,7 +511,6 @@ func maybeCloseContext(fc *FrankenPHPContext) {
 
 //export go_ub_write
 func go_ub_write(rh C.uintptr_t, cBuf *C.char, length C.int) (C.size_t, C.bool) {
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 	fc, _ := FromContext(r.Context())
 
@@ -582,7 +548,6 @@ var headerKeyCache = func() otter.Cache[string, string] {
 
 //export go_register_variables
 func go_register_variables(rh C.uintptr_t, trackVarsArray *C.zval) {
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
@@ -663,7 +628,6 @@ func go_apache_request_headers(rh, mrh C.uintptr_t) (*C.go_string, C.size_t, C.u
 
 		return nil, 0, 0
 	}
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 
 	pinner := &runtime.Pinner{}
@@ -717,7 +681,6 @@ func addHeader(fc *FrankenPHPContext, cString *C.char, length C.int) {
 
 //export go_write_headers
 func go_write_headers(rh C.uintptr_t, status C.int, headers *C.zend_llist) {
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
@@ -746,7 +709,6 @@ func go_write_headers(rh C.uintptr_t, status C.int, headers *C.zend_llist) {
 
 //export go_sapi_flush
 func go_sapi_flush(rh C.uintptr_t) bool {
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
@@ -763,7 +725,6 @@ func go_sapi_flush(rh C.uintptr_t) bool {
 
 //export go_read_post
 func go_read_post(rh C.uintptr_t, cBuf *C.char, countBytes C.size_t) (readBytes C.size_t) {
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 
 	p := unsafe.Slice((*byte)(unsafe.Pointer(cBuf)), countBytes)
@@ -779,7 +740,6 @@ func go_read_post(rh C.uintptr_t, cBuf *C.char, countBytes C.size_t) (readBytes 
 
 //export go_read_cookies
 func go_read_cookies(rh C.uintptr_t) *C.char {
-	//r := cgo.Handle(rh).Value().(*http.Request)
 	r := requestHandles.Value(Handle(rh)).(*http.Request)
 
 	cookies := r.Cookies()

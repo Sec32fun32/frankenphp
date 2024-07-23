@@ -133,7 +133,6 @@ func go_frankenphp_worker_ready() {
 
 //export go_frankenphp_worker_handle_request_start
 func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
-	//mainRequest := cgo.Handle(mrh).Value().(*http.Request)
 	mainRequest := mainRequests.Value(Handle(mrh)).(*http.Request)
 	fc := mainRequest.Context().Value(contextKey).(*FrankenPHPContext)
 
@@ -158,9 +157,6 @@ func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
 	case r = <-rc:
 	}
 
-	//fc.currentWorkerRequest = requestHandles.NewHandle(r)
-	//r.Context().Value(handleKey).(*handleList).AddHandle(fc.currentWorkerRequest)
-
 	l.Debug("request handling started", zap.String("worker", fc.scriptFilename), zap.String("url", r.RequestURI))
 	rh, err := updateServerContext(r, false, mrh)
 	fc.currentWorkerRequest = *rh
@@ -177,14 +173,12 @@ func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
 
 //export go_frankenphp_finish_request
 func go_frankenphp_finish_request(mrh, rh C.uintptr_t, deleteHandle bool) {
-	//rHandle := cgo.Handle(rh)
 	rHandle := requestHandles.Value(Handle(rh))
 	r := rHandle.(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
 	if deleteHandle {
 		requestHandles.Delete(Handle(rh))
-		//r.Context().Value(handleKey).(*handleList).FreeAll()
 		mainRequests.Value(Handle(mrh)).(*http.Request).Context().Value(contextKey).(*FrankenPHPContext).currentWorkerRequest = 0
 	}
 
