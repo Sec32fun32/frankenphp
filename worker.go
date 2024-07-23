@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"runtime/cgo"
 	"sync"
 
 	"go.uber.org/zap"
@@ -55,6 +54,9 @@ func startWorkers(fileName string, nbWorkers int, env PreparedEnv) error {
 
 	env["FRANKENPHP_WORKER\x00"] = "1"
 
+	// todo: multiple workers!
+	mainRequests = ConcurrentHandle.NewConcurrentHandle(nbWorkers)
+
 	l := getLogger()
 	for i := 0; i < nbWorkers; i++ {
 		go func() {
@@ -82,8 +84,8 @@ func startWorkers(fileName string, nbWorkers int, env PreparedEnv) error {
 				fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 				if fc.currentWorkerRequest != 0 {
 					// Terminate the pending HTTP request handled by the worker
-					maybeCloseContext(fc.currentWorkerRequest.Value().(*http.Request).Context().Value(contextKey).(*FrankenPHPContext))
-					fc.currentWorkerRequest.Delete()
+					maybeCloseContext(requestHandles.Value(fc.currentWorkerRequest).(*http.Request).Context().Value(contextKey).(*FrankenPHPContext))
+					requestHandles.Delete(fc.currentWorkerRequest)
 					fc.currentWorkerRequest = 0
 				}
 
@@ -131,7 +133,8 @@ func go_frankenphp_worker_ready() {
 
 //export go_frankenphp_worker_handle_request_start
 func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
-	mainRequest := cgo.Handle(mrh).Value().(*http.Request)
+	//mainRequest := cgo.Handle(mrh).Value().(*http.Request)
+	mainRequest := mainRequests.Value(Handle(mrh)).(*http.Request)
 	fc := mainRequest.Context().Value(contextKey).(*FrankenPHPContext)
 
 	v, ok := workersRequestChans.Load(fc.scriptFilename)
@@ -155,13 +158,16 @@ func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
 	case r = <-rc:
 	}
 
-	fc.currentWorkerRequest = cgo.NewHandle(r)
-	r.Context().Value(handleKey).(*handleList).AddHandle(fc.currentWorkerRequest)
+	//fc.currentWorkerRequest = requestHandles.NewHandle(r)
+	//r.Context().Value(handleKey).(*handleList).AddHandle(fc.currentWorkerRequest)
 
 	l.Debug("request handling started", zap.String("worker", fc.scriptFilename), zap.String("url", r.RequestURI))
-	if err := updateServerContext(r, false, mrh); err != nil {
+	rh, err := updateServerContext(r, false, mrh)
+	fc.currentWorkerRequest = *rh
+	if err != nil {
 		// Unexpected error
 		l.Debug("unexpected error", zap.String("worker", fc.scriptFilename), zap.String("url", r.RequestURI), zap.Error(err))
+		requestHandles.Delete(*rh)
 
 		return 0
 	}
@@ -171,13 +177,15 @@ func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
 
 //export go_frankenphp_finish_request
 func go_frankenphp_finish_request(mrh, rh C.uintptr_t, deleteHandle bool) {
-	rHandle := cgo.Handle(rh)
-	r := rHandle.Value().(*http.Request)
+	//rHandle := cgo.Handle(rh)
+	rHandle := requestHandles.Value(Handle(rh))
+	r := rHandle.(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
 	if deleteHandle {
-		r.Context().Value(handleKey).(*handleList).FreeAll()
-		cgo.Handle(mrh).Value().(*http.Request).Context().Value(contextKey).(*FrankenPHPContext).currentWorkerRequest = 0
+		requestHandles.Delete(Handle(rh))
+		//r.Context().Value(handleKey).(*handleList).FreeAll()
+		mainRequests.Value(Handle(mrh)).(*http.Request).Context().Value(contextKey).(*FrankenPHPContext).currentWorkerRequest = 0
 	}
 
 	maybeCloseContext(fc)

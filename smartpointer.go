@@ -21,7 +21,8 @@ type pointerList struct {
 
 // HandleList A list of pointers that can be freed at a later time
 type handleList struct {
-	Handles []cgo.Handle
+	Handles  []cgo.Handle
+	CHandles []Handle
 }
 
 // AddHandle Call when registering a handle for the very first time
