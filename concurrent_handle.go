@@ -1,7 +1,6 @@
 package frankenphp
 
 import (
-	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -63,7 +62,6 @@ var (
 // Example Usage:
 // requestHandles = ConcurrentHandle.NewConcurrentHandle(opt.numThreads * 4)
 func (h *concurrentHandle) NewConcurrentHandle(nHandles int) HandleKey {
-	logger.Warn("NewConcurrentHandle", zap.Int("nHandles", nHandles))
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -85,7 +83,6 @@ func (h *concurrentHandle) NewConcurrentHandle(nHandles int) HandleKey {
 		lower: uintptr(key) << h.maxKey,
 		upper: uintptr(key+1) << h.maxKey,
 	}
-	logger.Warn("NewConcurrentHandle", zap.Uintptr("key", key), zap.Uintptr("idx", h.handles[HandleKey(key)].idx), zap.Uintptr("lower", h.handles[HandleKey(key)].lower), zap.Uintptr("upper", h.handles[HandleKey(key)].upper))
 
 	return HandleKey(key)
 }
@@ -98,7 +95,6 @@ func (h *concurrentHandle) NewConcurrentHandle(nHandles int) HandleKey {
 func (k *HandleKey) NewHandle(v any) Handle {
 	ConcurrentHandle.mu.RLock()
 	defer ConcurrentHandle.mu.RUnlock()
-	logger.Warn("NewHandle", zap.Any("k", k))
 
 	h := ConcurrentHandle.handles[*k]
 	s := &slot{value: v}
@@ -110,29 +106,22 @@ func (k *HandleKey) NewHandle(v any) Handle {
 
 		// 0 should not be an option, because it is "falsy"
 		if next == h.lower {
-			logger.Warn("Unable to capture handle for being too low", zap.Any("k", k), zap.Any("h", h))
 			continue
 		}
 
 		// we have reached the end of the partition, try to wrap around
 		if next > h.upper {
 			if atomic.CompareAndSwapUintptr(&h.idx, next, h.lower+1) {
-				logger.Warn("Wrapped around handle partition", zap.Any("k", k), zap.Any("h", h))
 				next = h.lower + 1
 			} else {
-				logger.Warn("Unable to wrap around handle partition", zap.Any("k", k), zap.Any("h", h))
 				continue
 			}
 		}
 
 		// set the value in the slot
 		if h.value[sloti].CompareAndSwap(ConcurrentHandle.nll, s) {
-			logger.Warn("NewHandle", zap.Any("k", k), zap.Any("h", next), zap.Any("sloti", sloti))
 			return Handle(next)
 		} else if h.value[sloti].CompareAndSwap(nil, s) {
-
-			logger.Warn("NewHandle", zap.Any("k", k), zap.Any("h", next), zap.Any("sloti", sloti))
-
 			return Handle(next)
 		}
 	}
@@ -153,7 +142,6 @@ func (k *HandleKey) Value(h Handle) any {
 	defer ConcurrentHandle.mu.RUnlock()
 
 	sloti := len(ConcurrentHandle.handles[*k].value)
-	logger.Warn("Value", zap.Any("k", k), zap.Any("h", h), zap.Any("sloti", h%Handle(sloti)))
 	val := ConcurrentHandle.handles[*k].value[h%Handle(sloti)].Load()
 	if val == nil {
 		return nil
@@ -176,7 +164,6 @@ func (k *HandleKey) Delete(h Handle) {
 	defer ConcurrentHandle.mu.RUnlock()
 
 	sloti := len(ConcurrentHandle.handles[*k].value)
-	logger.Warn("Delete", zap.Any("k", k), zap.Any("h", h), zap.Any("sloti", h%Handle(sloti)))
 	ConcurrentHandle.handles[*k].value[h%Handle(sloti)].Store(ConcurrentHandle.nll)
 }
 
