@@ -410,8 +410,9 @@ func updateServerContext(request *http.Request, create bool, mrh C.uintptr_t) (*
 	cRequestUri := C.CString(request.URL.RequestURI())
 
 	var rh Handle
+	var h Handle
 	if fc.responseWriter == nil {
-		h := mainRequests.NewHandle(request)
+		h = mainRequests.NewHandle(request)
 		mrh = C.uintptr_t(h)
 	} else {
 		rh = requestHandles.NewHandle(request)
@@ -432,6 +433,10 @@ func updateServerContext(request *http.Request, create bool, mrh C.uintptr_t) (*
 		cAuthPassword,
 		C.int(request.ProtoMajor*1000+request.ProtoMinor),
 	)
+
+	if rh == 0 {
+		rh = h
+	}
 
 	if ret > 0 {
 		return &rh, RequestContextCreationError
