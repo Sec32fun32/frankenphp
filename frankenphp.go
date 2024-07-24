@@ -495,7 +495,7 @@ func go_handle_request() bool {
 			panic(ScriptExecutionError)
 		}
 
-		requestHandles.Delete(*rh)
+		rh.Delete()
 
 		return true
 	}
@@ -509,7 +509,7 @@ func maybeCloseContext(fc *FrankenPHPContext) {
 
 //export go_ub_write
 func go_ub_write(rh C.uintptr_t, cBuf *C.char, length C.int) (C.size_t, C.bool) {
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 	fc, _ := FromContext(r.Context())
 
 	var writer io.Writer
@@ -546,7 +546,7 @@ var headerKeyCache = func() otter.Cache[string, string] {
 
 //export go_register_variables
 func go_register_variables(rh C.uintptr_t, trackVarsArray *C.zval) {
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
 	p := &runtime.Pinner{}
@@ -616,8 +616,7 @@ func go_register_variables(rh C.uintptr_t, trackVarsArray *C.zval) {
 func go_apache_request_headers(rh, mrh C.uintptr_t) (*C.go_string, C.size_t, C.uintptr_t) {
 	if rh == 0 {
 		// worker mode, not handling a request
-		//mr := cgo.Handle(mrh).Value().(*http.Request)
-		mr := mainRequests.Value(Handle(mrh)).(*http.Request)
+		mr := Handle(mrh).Value().(*http.Request)
 		mfc := mr.Context().Value(contextKey).(*FrankenPHPContext)
 
 		if c := mfc.logger.Check(zap.DebugLevel, "apache_request_headers() called in non-HTTP context"); c != nil {
@@ -626,7 +625,7 @@ func go_apache_request_headers(rh, mrh C.uintptr_t) (*C.go_string, C.size_t, C.u
 
 		return nil, 0, 0
 	}
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 
 	pinner := &runtime.Pinner{}
 	pinnerHandle := C.uintptr_t(cgo.NewHandle(pinner))
@@ -679,7 +678,7 @@ func addHeader(fc *FrankenPHPContext, cString *C.char, length C.int) {
 
 //export go_write_headers
 func go_write_headers(rh C.uintptr_t, status C.int, headers *C.zend_llist) {
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
 	if fc.responseWriter == nil {
@@ -707,7 +706,7 @@ func go_write_headers(rh C.uintptr_t, status C.int, headers *C.zend_llist) {
 
 //export go_sapi_flush
 func go_sapi_flush(rh C.uintptr_t) bool {
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
 	if fc.responseWriter == nil || clientHasClosed(r) {
@@ -723,7 +722,7 @@ func go_sapi_flush(rh C.uintptr_t) bool {
 
 //export go_read_post
 func go_read_post(rh C.uintptr_t, cBuf *C.char, countBytes C.size_t) (readBytes C.size_t) {
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 
 	p := unsafe.Slice((*byte)(unsafe.Pointer(cBuf)), countBytes)
 	var err error
@@ -738,7 +737,7 @@ func go_read_post(rh C.uintptr_t, cBuf *C.char, countBytes C.size_t) (readBytes 
 
 //export go_read_cookies
 func go_read_cookies(rh C.uintptr_t) *C.char {
-	r := requestHandles.Value(Handle(rh)).(*http.Request)
+	r := Handle(rh).Value().(*http.Request)
 
 	cookies := r.Cookies()
 	if len(cookies) == 0 {

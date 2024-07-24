@@ -1,15 +1,19 @@
 package frankenphp
 
 import (
+	"go.uber.org/zap"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 type Handle uintptr
-type HandleKey uint64
+type HandleKey uintptr
 
 type handlePartition struct {
 	value []atomic.Value
+	upper uintptr
+	lower uintptr
 	idx   uintptr
 }
 
@@ -25,6 +29,7 @@ type concurrentHandle struct {
 	nextKey HandleKey
 	mu      sync.RWMutex
 	nll     *slot
+	maxKey  Handle
 }
 
 type slot struct {
@@ -36,6 +41,7 @@ var (
 		handles: make(map[HandleKey]*handlePartition),
 		nextKey: 0,
 		nll:     nil,
+		maxKey:  0,
 	}
 )
 
@@ -57,14 +63,29 @@ var (
 // Example Usage:
 // requestHandles = ConcurrentHandle.NewConcurrentHandle(opt.numThreads * 4)
 func (h *concurrentHandle) NewConcurrentHandle(nHandles int) HandleKey {
+	logger.Warn("NewConcurrentHandle", zap.Int("nHandles", nHandles))
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	key := atomic.AddUint64((*uint64)(&h.nextKey), 1)
+	if h.maxKey == 0 {
+		// determine half the bits of the key
+		h.maxKey = Handle(unsafe.Sizeof(Handle(0)) * 4)
+	}
+
+	key := atomic.AddUintptr((*uintptr)(&h.nextKey), 1)
+
+	if key > uintptr(1<<h.maxKey) {
+		panic("concurrentHandle: maximum number of concurrent handles reached")
+	}
+
 	h.handles[HandleKey(key)] = &handlePartition{
 		value: make([]atomic.Value, nHandles+1),
-		idx:   0,
+		// pack the key into the index, so we can look up the key from the handle
+		idx:   uintptr(key) << h.maxKey,
+		lower: uintptr(key) << h.maxKey,
+		upper: uintptr(key+1) << h.maxKey,
 	}
+	logger.Warn("NewConcurrentHandle", zap.Uintptr("key", key), zap.Uintptr("idx", h.handles[HandleKey(key)].idx), zap.Uintptr("lower", h.handles[HandleKey(key)].lower), zap.Uintptr("upper", h.handles[HandleKey(key)].upper))
 
 	return HandleKey(key)
 }
@@ -77,19 +98,41 @@ func (h *concurrentHandle) NewConcurrentHandle(nHandles int) HandleKey {
 func (k *HandleKey) NewHandle(v any) Handle {
 	ConcurrentHandle.mu.RLock()
 	defer ConcurrentHandle.mu.RUnlock()
+	logger.Warn("NewHandle", zap.Any("k", k))
 
 	h := ConcurrentHandle.handles[*k]
 	s := &slot{value: v}
 
 	for {
-		next := atomic.AddUintptr(&h.idx, 1) % uintptr(len(h.value))
-		if next == 0 {
+		// attempt to get the next handle slot
+		next := atomic.AddUintptr(&h.idx, 1)
+		sloti := next % uintptr(len(h.value))
+
+		// 0 should not be an option, because it is "falsy"
+		if next == h.lower {
+			logger.Warn("Unable to capture handle for being too low", zap.Any("k", k), zap.Any("h", h))
 			continue
 		}
 
-		if h.value[next].CompareAndSwap(ConcurrentHandle.nll, s) {
+		// we have reached the end of the partition, try to wrap around
+		if next > h.upper {
+			if atomic.CompareAndSwapUintptr(&h.idx, next, h.lower+1) {
+				logger.Warn("Wrapped around handle partition", zap.Any("k", k), zap.Any("h", h))
+				next = h.lower + 1
+			} else {
+				logger.Warn("Unable to wrap around handle partition", zap.Any("k", k), zap.Any("h", h))
+				continue
+			}
+		}
+
+		// set the value in the slot
+		if h.value[sloti].CompareAndSwap(ConcurrentHandle.nll, s) {
+			logger.Warn("NewHandle", zap.Any("k", k), zap.Any("h", next), zap.Any("sloti", sloti))
 			return Handle(next)
-		} else if h.value[next].CompareAndSwap(nil, s) {
+		} else if h.value[sloti].CompareAndSwap(nil, s) {
+
+			logger.Warn("NewHandle", zap.Any("k", k), zap.Any("h", next), zap.Any("sloti", sloti))
+
 			return Handle(next)
 		}
 	}
@@ -109,11 +152,18 @@ func (k *HandleKey) Value(h Handle) any {
 	ConcurrentHandle.mu.RLock()
 	defer ConcurrentHandle.mu.RUnlock()
 
-	val := ConcurrentHandle.handles[*k].value[h].Load()
+	sloti := len(ConcurrentHandle.handles[*k].value)
+	logger.Warn("Value", zap.Any("k", k), zap.Any("h", h), zap.Any("sloti", h%Handle(sloti)))
+	val := ConcurrentHandle.handles[*k].value[h%Handle(sloti)].Load()
 	if val == nil {
 		return nil
 	}
 	return val.(*slot).value
+}
+
+func (h Handle) Value() any {
+	k := HandleKey(uintptr(h) >> ConcurrentHandle.maxKey)
+	return k.Value(h)
 }
 
 // Delete deletes the value stored in the specified handle of the handle partition associated with the given HandleKey.
@@ -125,5 +175,12 @@ func (k *HandleKey) Delete(h Handle) {
 	ConcurrentHandle.mu.RLock()
 	defer ConcurrentHandle.mu.RUnlock()
 
-	ConcurrentHandle.handles[*k].value[h].Store(ConcurrentHandle.nll)
+	sloti := len(ConcurrentHandle.handles[*k].value)
+	logger.Warn("Delete", zap.Any("k", k), zap.Any("h", h), zap.Any("sloti", h%Handle(sloti)))
+	ConcurrentHandle.handles[*k].value[h%Handle(sloti)].Store(ConcurrentHandle.nll)
+}
+
+func (h Handle) Delete() {
+	k := HandleKey(uintptr(h) >> ConcurrentHandle.maxKey)
+	k.Delete(h)
 }

@@ -20,6 +20,13 @@ var (
 
 // TODO: start all the worker in parallell to reduce the boot time
 func initWorkers(opt []workerOpt) error {
+
+	handles := 0
+	for _, w := range opt {
+		handles += w.num
+	}
+
+	mainRequests = ConcurrentHandle.NewConcurrentHandle(handles)
 	for _, w := range opt {
 		if err := startWorkers(w.fileName, w.num, w.env); err != nil {
 			return err
@@ -54,9 +61,6 @@ func startWorkers(fileName string, nbWorkers int, env PreparedEnv) error {
 
 	env["FRANKENPHP_WORKER\x00"] = "1"
 
-	// todo: multiple workers!
-	mainRequests = ConcurrentHandle.NewConcurrentHandle(nbWorkers)
-
 	l := getLogger()
 	for i := 0; i < nbWorkers; i++ {
 		go func() {
@@ -84,8 +88,8 @@ func startWorkers(fileName string, nbWorkers int, env PreparedEnv) error {
 				fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 				if fc.currentWorkerRequest != 0 {
 					// Terminate the pending HTTP request handled by the worker
-					maybeCloseContext(requestHandles.Value(fc.currentWorkerRequest).(*http.Request).Context().Value(contextKey).(*FrankenPHPContext))
-					requestHandles.Delete(fc.currentWorkerRequest)
+					maybeCloseContext(fc.currentWorkerRequest.Value().(*http.Request).Context().Value(contextKey).(*FrankenPHPContext))
+					fc.currentWorkerRequest.Delete()
 					fc.currentWorkerRequest = 0
 				}
 
@@ -133,7 +137,7 @@ func go_frankenphp_worker_ready() {
 
 //export go_frankenphp_worker_handle_request_start
 func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
-	mainRequest := mainRequests.Value(Handle(mrh)).(*http.Request)
+	mainRequest := Handle(mrh).Value().(*http.Request)
 	fc := mainRequest.Context().Value(contextKey).(*FrankenPHPContext)
 
 	v, ok := workersRequestChans.Load(fc.scriptFilename)
@@ -163,7 +167,7 @@ func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
 	if err != nil {
 		// Unexpected error
 		l.Debug("unexpected error", zap.String("worker", fc.scriptFilename), zap.String("url", r.RequestURI), zap.Error(err))
-		requestHandles.Delete(*rh)
+		rh.Delete()
 
 		return 0
 	}
@@ -173,13 +177,13 @@ func go_frankenphp_worker_handle_request_start(mrh C.uintptr_t) C.uintptr_t {
 
 //export go_frankenphp_finish_request
 func go_frankenphp_finish_request(mrh, rh C.uintptr_t, deleteHandle bool) {
-	rHandle := requestHandles.Value(Handle(rh))
-	r := rHandle.(*http.Request)
+	rHandle := Handle(rh)
+	r := rHandle.Value().(*http.Request)
 	fc := r.Context().Value(contextKey).(*FrankenPHPContext)
 
 	if deleteHandle {
-		requestHandles.Delete(Handle(rh))
-		mainRequests.Value(Handle(mrh)).(*http.Request).Context().Value(contextKey).(*FrankenPHPContext).currentWorkerRequest = 0
+		rHandle.Delete()
+		Handle(mrh).Value().(*http.Request).Context().Value(contextKey).(*FrankenPHPContext).currentWorkerRequest = 0
 	}
 
 	maybeCloseContext(fc)
