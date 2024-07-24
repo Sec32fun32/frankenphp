@@ -163,6 +163,10 @@ func (k *HandleKey) Delete(h Handle) {
 	ConcurrentHandle.mu.RLock()
 	defer ConcurrentHandle.mu.RUnlock()
 
+	// we have already deleted this handle
+	if *k == HandleKey(0) {
+		return
+	}
 	sloti := len(ConcurrentHandle.handles[*k].value)
 	ConcurrentHandle.handles[*k].value[h%Handle(sloti)].Store(ConcurrentHandle.nll)
 }
